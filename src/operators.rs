@@ -72,12 +72,10 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
 
 // y_ik=\frac{w_k×x_{ik}}{\sqrt{ \frac{1}{n} \sum_{j} x_{ij}^2 +\epsilon}}
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    let shape = x.shape();
-    assert!(shape.len() == 2);
-    let len = shape[0];
-    let n = shape[1];
-    let yshape = y.shape();
-    assert!(yshape.len() == 2 && yshape[0] == len && yshape[1] == n);
+    assert!(y.shape().len() == 2);
+    let len = y.shape()[0];
+    let n = y.shape()[1];
+    assert!(x.shape().iter().product::<usize>() == len * n);
     let _y = unsafe { y.data_mut() };
     let _x = x.data();
     let _w = w.data();
@@ -126,6 +124,30 @@ pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor
         for j in 0..n {
             for l in 0..k {
                 c[i * n + j] += alpha * a[i * k + l] * b[j * k + l];
+            }
+        }
+    }
+}
+
+pub fn matmul(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
+    let shape = c.shape();
+    assert!(shape.len() == 2 && a.shape().len() == 2 && b.shape().len() == 2);
+    let m = shape[0];
+    let n = shape[1];
+    let k = a.shape()[1];
+    assert!(m == a.shape()[0] && n == b.shape()[1] && k == b.shape()[0]);
+    let c = unsafe { c.data_mut() };
+    let a = a.data();
+    let b = b.data();
+    for i in 0..m {
+        for j in 0..n {
+            c[i * n + j] *= beta;
+        }
+    }
+    for i in 0..m {
+        for j in 0..n {
+            for l in 0..k {
+                c[i * n + j] += alpha * a[i * k + l] * b[l * n + j];
             }
         }
     }

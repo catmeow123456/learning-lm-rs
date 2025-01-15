@@ -74,6 +74,12 @@ impl Llama<f32> {
         OP::gather(&mut residual, input, &self.params.embedding_table);
 
         for layer in 0..self.n_layers {
+            // x = rms_norm(residual)
+            // Q = RoPE(x @ Q_weight.T)
+            // K = RoPE(x @ K_weight.T)
+            // V = x @ V_weight.T
+            // K = cat(K_cache, K)
+            // V = cat(V_cache, V)
             OP::rms_norm(
                 &mut hidden_states,
                 &residual,
@@ -82,6 +88,7 @@ impl Llama<f32> {
             );
 
             let q = (&mut q_buf).reshape(&vec![seq_len, self.n_q_h * self.dqkv]); // (seq, n_h * dqkv)
+            println!("past_seq_len = {}", past_seq_len);
             let k = &mut cache.k_cache(layer, past_seq_len); // (seq, n_kv_h * dqkv)
             let v = &mut cache.v_cache(layer, past_seq_len); // (seq, n_kv_h * dqkv)
             OP::matmul_transb(q, 0., &hidden_states, &self.params.wq[layer], 1.0);
@@ -100,11 +107,25 @@ impl Llama<f32> {
 
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
-
-            todo!("self_attention(...)");
-            todo!("down_proj matmul and add residual");
-
-            todo!("mlp(...)");
+            // score = Q @ K.T / sqrt(dim)
+            // attn = softmax(score)
+            // attn_V = attn @ V
+            self_attention(&mut hidden_states, &mut att_scores,
+                q.reshape(&vec![seq_len, self.n_q_h * self.dqkv]),
+                full_k.reshape(&vec![total_seq_len, self.n_kv_h * self.dqkv]),
+                full_v.reshape(&vec![total_seq_len, self.n_kv_h * self.dqkv]),
+                self.n_kv_h, n_groups, seq_len, total_seq_len, self.dqkv);
+            // out = attn_V @ O_weight.T
+            // residual = out + residual
+            OP::matmul_transb(&mut residual, 1.0, &hidden_states, &self.params.wo[layer], 1.0);
+            // mlp
+            mlp(&mut residual, &mut hidden_states, &mut gate_buf, &mut up_buf,
+                &self.params.w_up[layer],
+                &self.params.w_down[layer],
+                &self.params.w_gate[layer],
+                &self.params.rms_ffn_w[layer],
+                self.eps,
+            );
         }
 
         // No matter what seq_len, the output is always a 1D vector of length vocab,
@@ -134,26 +155,25 @@ impl Llama<f32> {
         temperature: f32,
     ) -> Vec<u32>{
         let mut result = Vec::<u32>::new();
-        
-        todo!("实现文本生成");
-        
+        let mut cache = self.new_cache();
+        // cache.increment(token_ids.len());
+        let mut input = token_ids.to_vec();
+        for _ in 0..max_len {
+            let input_tensor = Tensor::<u32>::new(input.clone(), &vec![input.len()]);
+            let logits = self.forward(&input_tensor, &mut cache);
+            let next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+            result.push(next_token);
+            input.push(next_token);
+            println!("cache.len ={}, next_token = {}", cache.len(), next_token);
+        }
         result
     }
 }
 
 // ``` python
-// x = rms_norm(residual)
-// Q = RoPE(x @ Q_weight.T)
-// K = RoPE(x @ K_weight.T)
-// V = x @ V_weight.T
-// K = cat(K_cache, K)
-// V = cat(V_cache, V)
-// ### 以下是你需要实现的部分
 // score = Q @ K.T / sqrt(dim)
 // attn = softmax(score)
 // attn_V = attn @ V
-// out = attn_V @ O_weight.T
-// residual = out + residual
 // ```
 fn self_attention(
     hidden_states: &mut Tensor<f32>, // (seq, n_kv_h * n_groups * dqkv)
@@ -167,7 +187,12 @@ fn self_attention(
     total_seq_len: usize,
     dqkv: usize,
 ) {
-    let residual = unsafe { hidden_states.data_mut() };
+    assert!(hidden_states.shape() == &vec![seq_len, n_kv_h * n_groups * dqkv]);
+    assert!(att_scores.shape() == &vec![n_kv_h, n_groups, seq_len, total_seq_len]);
+    assert!(q.shape() == &vec![seq_len, n_kv_h * n_groups * dqkv]);
+    assert!(k.shape() == &vec![total_seq_len, n_kv_h * dqkv]);
+    assert!(v.shape() == &vec![total_seq_len, n_kv_h * dqkv]);
+    let hidden = unsafe { hidden_states.data_mut() };
     let score = unsafe { att_scores.data_mut() };
     for i in 0..n_kv_h {
         let mut k_i = Tensor::<f32>::default(&vec![total_seq_len, dqkv]);
@@ -193,10 +218,10 @@ fn self_attention(
             let mut attn = att_scores_ij;
             OP::masked_softmax(&mut attn);
             let mut attn_v = Tensor::<f32>::default(&vec![seq_len, dqkv]);
-            OP::matmul_transb(&mut attn_v, 0., &attn, &v_i, 1.0);
+            OP::matmul(&mut attn_v, 0., &attn, &v_i, 1.0);
             for x in 0..seq_len {
                 let offset = ((x * n_kv_h + i) * n_groups + j) * dqkv;
-                (0..dqkv).for_each(|i| residual[offset + i] += attn_v.data()[x * dqkv + i]);
+                (0..dqkv).for_each(|i| hidden[offset + i] = attn_v.data()[x * dqkv + i]);
             }
         }
     }

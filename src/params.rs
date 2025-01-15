@@ -47,7 +47,7 @@ impl LLamaParams<f32> {
             println!("{} = {:?}", name, res.shape());
             res
         };
-        println!("{:?}", safetensor.names());
+        // println!("{:?}", safetensor.names());
         let layer = config.num_hidden_layers;
         LLamaParams {
             embedding_table: get_tensor("lm_head.weight"),
