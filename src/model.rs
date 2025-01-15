@@ -141,6 +141,20 @@ impl Llama<f32> {
     }
 }
 
+// ``` python
+// x = rms_norm(residual)
+// Q = RoPE(x @ Q_weight.T)
+// K = RoPE(x @ K_weight.T)
+// V = x @ V_weight.T
+// K = cat(K_cache, K)
+// V = cat(V_cache, V)
+// ### 以下是你需要实现的部分
+// score = Q @ K.T / sqrt(dim)
+// attn = softmax(score)
+// attn_V = attn @ V
+// out = attn_V @ O_weight.T
+// residual = out + residual
+// ```
 fn self_attention(
     hidden_states: &mut Tensor<f32>, // (seq, n_kv_h * n_groups * dqkv)
     att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
@@ -153,9 +167,49 @@ fn self_attention(
     total_seq_len: usize,
     dqkv: usize,
 ) {
-    todo!("Implement self_attention");
+    let residual = unsafe { hidden_states.data_mut() };
+    let score = unsafe { att_scores.data_mut() };
+    for i in 0..n_kv_h {
+        let mut k_i = Tensor::<f32>::default(&vec![total_seq_len, dqkv]);
+        for x in 0..total_seq_len {
+            let dst_k_i = &mut unsafe { k_i.data_mut() }[x * dqkv..][..dqkv];
+            dst_k_i.copy_from_slice(&k.data()[((x * n_kv_h + i) * dqkv)..][..dqkv]);
+        }
+        let mut v_i = Tensor::<f32>::default(&vec![total_seq_len, dqkv]);
+        for x in 0..total_seq_len {
+            let dst_v_i = &mut unsafe { v_i.data_mut() }[x * dqkv..][..dqkv];
+            dst_v_i.copy_from_slice(&v.data()[((x * n_kv_h + i) * dqkv)..][..dqkv]);
+        }
+        for j in 0..n_groups {
+            let mut q_ij = Tensor::<f32>::default(&vec![seq_len, dqkv]);
+            for x in 0..seq_len {
+                let dst_q_ij = &mut unsafe { q_ij.data_mut() }[x * dqkv..][..dqkv];
+                dst_q_ij.copy_from_slice(&q.data()[(((x * n_kv_h + i) * n_groups + j) * dqkv)..][..dqkv]);
+            }
+            let score_offset = (i * n_groups + j) * seq_len * total_seq_len;
+            let mut att_scores_ij = Tensor::<f32>::default(&vec![seq_len, total_seq_len]);
+            OP::matmul_transb(&mut att_scores_ij, 0., &q_ij, &k_i, 1./(dqkv as f32).sqrt());
+            (&mut score[score_offset..][..seq_len * total_seq_len]).copy_from_slice(att_scores_ij.data());
+            let mut attn = att_scores_ij;
+            OP::masked_softmax(&mut attn);
+            let mut attn_v = Tensor::<f32>::default(&vec![seq_len, dqkv]);
+            OP::matmul_transb(&mut attn_v, 0., &attn, &v_i, 1.0);
+            for x in 0..seq_len {
+                let offset = ((x * n_kv_h + i) * n_groups + j) * dqkv;
+                (0..dqkv).for_each(|i| residual[offset + i] += attn_v.data()[x * dqkv + i]);
+            }
+        }
+    }
 }
 
+// ``` python
+// hidden = rms_norm(residual)
+// gate = hidden @ gate_weight.T
+// up = hidden @ up_weight.T
+// act = gate * sigmoid(gate) * up ## SwiGLU
+// output = act @ down_weight.T
+// residual = output + residual
+// ```
 fn mlp(
     residual: &mut Tensor<f32>,
     hidden_states: &mut Tensor<f32>,
@@ -167,7 +221,21 @@ fn mlp(
     rms_w: &Tensor<f32>,
     eps: f32,
 ) {
-    todo!("Implement mlp");
+    // check shape
+    let shape = residual.shape();
+    assert!(shape.len() == 2 && gate.shape().len() == 2 && up.shape().len() == 2 && hidden_states.shape().len() == 2);
+    let seq_len = shape[0];
+    assert!(gate.shape()[0] == seq_len && up.shape()[0] == seq_len && shape == hidden_states.shape());
+    let d = shape[1];
+    let di = gate.shape()[1];
+    assert!(w_gate.shape() == &vec![di, d] && w_up.shape() == &vec![di, d] && w_down.shape() == &vec![d, di]);
+    // do calculation
+    OP::rms_norm(hidden_states, &residual, rms_w, eps);
+    OP::matmul_transb(gate, 0., &hidden_states, w_gate, 1.0);
+    OP::matmul_transb(up, 0., &hidden_states, w_up, 1.0);
+    let mut act = Tensor::<f32>::new(up.data().to_vec(), up.shape());
+    OP::swiglu(&mut act, gate);
+    OP::matmul_transb(residual, 1., &act, w_down, 1.);
 }
 
 #[test]

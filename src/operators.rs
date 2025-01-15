@@ -70,26 +70,65 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
     }
 }
 
+// y_ik=\frac{w_k×x_{ik}}{\sqrt{ \frac{1}{n} \sum_{j} x_{ij}^2 +\epsilon}}
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+    let shape = x.shape();
+    assert!(shape.len() == 2);
+    let len = shape[0];
+    let n = shape[1];
+    let yshape = y.shape();
+    assert!(yshape.len() == 2 && yshape[0] == len && yshape[1] == n);
+    let _y = unsafe { y.data_mut() };
+    let _x = x.data();
+    let _w = w.data();
+    assert!(w.size() == n);
+    for i in 0..len {
+        let offset = i * n;
+        let sum = _x[offset..offset + n].iter().map(|x| x * x).sum::<f32>();
+        let weight = 1. / (sum / n as f32 + epsilon).sqrt();
+        for k in 0..n {
+            _y[offset + k] = _w[k] * _x[offset + k] * weight;
+        }
+    }
 }
 
 // y = silu(x) * y
 // hint: this is an element-wise operation
 pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
-    // let len = y.size();
-    // assert!(len == x.size());
+    let len = y.size();
+    assert!(len == x.size());
 
-    // let _y = unsafe { y.data_mut() };
-    // let _x = x.data();
-
-    todo!("实现 silu，这里给了一些前期准备工作的提示，你可以参考")
+    let _y = unsafe { y.data_mut() };
+    let _x = x.data();
+    for i in 0..len {
+        _y[i] = _y[i] * _x[i] / (1. + (-_x[i]).exp());
+    }
 }
 
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
+    let shape = c.shape();
+    assert!(shape.len() == 2 && a.shape().len() == 2 && b.shape().len() == 2);
+    let m = shape[0];
+    let n = shape[1];
+    let k = a.shape()[1];
+    assert!(m == a.shape()[0] && n == b.shape()[0] && k == b.shape()[1]);
+    let c = unsafe { c.data_mut() };
+    let a = a.data();
+    let b = b.data();
+    for i in 0..m {
+        for j in 0..n {
+            c[i * n + j] *= beta;
+        }
+    }
+    for i in 0..m {
+        for j in 0..n {
+            for l in 0..k {
+                c[i * n + j] += alpha * a[i * k + l] * b[j * k + l];
+            }
+        }
+    }
 }
 
 // Dot product of two tensors (treated as vectors)
