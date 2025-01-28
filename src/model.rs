@@ -88,7 +88,6 @@ impl Llama<f32> {
             );
 
             let q = (&mut q_buf).reshape(&vec![seq_len, self.n_q_h * self.dqkv]); // (seq, n_h * dqkv)
-            println!("past_seq_len = {}", past_seq_len);
             let k = &mut cache.k_cache(layer, past_seq_len); // (seq, n_kv_h * dqkv)
             let v = &mut cache.v_cache(layer, past_seq_len); // (seq, n_kv_h * dqkv)
             OP::matmul_transb(q, 0., &hidden_states, &self.params.wq[layer], 1.0);
@@ -156,15 +155,23 @@ impl Llama<f32> {
     ) -> Vec<u32>{
         let mut result = Vec::<u32>::new();
         let mut cache = self.new_cache();
-        // cache.increment(token_ids.len());
-        let mut input = token_ids.to_vec();
+        let mut next_token: u32;
+        let input = Tensor::<u32>::new(vec![self.bos_token_id], &vec![1]);
+        let logits = self.forward(&input, &mut cache);
+        next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+        for i in 0..token_ids.len() {
+            let input = Tensor::<u32>::new(vec![token_ids[i]], &vec![1]);
+            let logits = self.forward(&input, &mut cache);
+            next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+        }
         for _ in 0..max_len {
-            let input_tensor = Tensor::<u32>::new(input.clone(), &vec![input.len()]);
-            let logits = self.forward(&input_tensor, &mut cache);
-            let next_token = OP::random_sample(&logits, top_p, top_k, temperature);
             result.push(next_token);
-            input.push(next_token);
-            println!("cache.len ={}, next_token = {}", cache.len(), next_token);
+            let input = Tensor::<u32>::new(vec![next_token], &vec![1]);
+            let logits = self.forward(&input, &mut cache);
+            next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+            if next_token == self.eos_token_id {
+                break;
+            }
         }
         result
     }

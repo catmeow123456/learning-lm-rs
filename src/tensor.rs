@@ -79,7 +79,7 @@ impl Tensor<f32> {
     }
     #[allow(unused)]
     pub fn print(&self){
-        println!("shpae: {:?}, offset: {}, length: {}", self.shape, self.offset, self.length);
+        println!("shape: {:?}, offset: {}, length: {}", self.shape, self.offset, self.length);
         let dim = self.shape()[self.shape().len() - 1];
         let batch = self.length / dim;
         for i in 0..batch {
